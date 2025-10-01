@@ -1,0 +1,360 @@
+{
+  "Overview": "Onyx (formerly Danswer) is an enterprise AI platform that provides intelligent search and conversational AI capabilities by connecting to company documents, applications, and knowledge bases. The system ingests data from 40+ connectors (Google Drive, Slack, Confluence, etc.), processes and indexes content using vector embeddings and keyword search, and provides a chat interface powered by configurable LLMs. It implements RAG (Retrieval Augmented Generation) to ground AI responses in verified company data, includes permission management to ensure users only access authorized content, and supports both single-tenant and multi-tenant deployments with scalability from laptop to enterprise cloud infrastructure.",
+  
+  "TechnicalFlow": [
+    "1. User Authentication & Authorization: Users authenticate via configurable methods (OAuth2, SAML, OIDC, or basic auth). The system validates credentials, creates/retrieves user sessions with JWT tokens, and maintains RBAC permissions throughout the session.",
+    
+    "2. Connector Configuration & Credential Management: Administrators configure data source connectors via the web UI, specifying connector type, API credentials, and sync parameters. Credentials are encrypted and stored in PostgreSQL. Each connector-credential pair (CC Pair) is created with specific access permissions.",
+    
+    "3. Data Ingestion - Initial Load: Background job scheduler (Celery) triggers connector load operations. Each connector implements LoadConnector interface to fetch complete datasets from external sources (e.g., all Confluence pages, Slack messages, Google Drive files). Connectors make authenticated API calls to external systems using stored credentials.",
+    
+    "4. Data Ingestion - Incremental Polling: After initial load, PollConnector interface enables time-based incremental updates. System polls sources at configured intervals, fetching only documents modified since last sync using timestamp filters. This reduces API calls and processing overhead.",
+    
+    "5. Document Processing & Chunking: Raw documents flow through processing pipeline. HTML is parsed to extract text and metadata. Documents are split into semantic chunks (default 512 tokens) using intelligent chunking that preserves context. Each chunk maintains references to source document, creation date, and access permissions.",
+    
+    "6. Embedding Generation: Chunks are batched (default 32 documents) and sent to the Model Server. The server runs the configured embedding model (default: multilingual-e5 models) to generate dense vector representations. Embeddings capture semantic meaning and enable similarity search. Batching optimizes GPU/CPU utilization.",
+    
+    "7. Index Storage - Vector & Keyword: Embeddings and metadata are stored in Vespa (vector database). Vespa maintains both vector indexes for semantic search and keyword indexes for exact matching. Each document includes access control lists (ACLs) to enforce permissions at query time. Redis caches frequently accessed data.",
+    
+    "8. User Query Processing: User submits natural language query through web interface or Slack bot. System applies query preprocessing: spell correction, expansion, and optional multi-language translation based on configured language hints.",
+    
+    "9. Search Execution - Hybrid Retrieval: Query is converted to embedding vector (using same model as documents). Vespa executes hybrid search combining vector similarity (semantic) and keyword matching (BM25). Hybrid alpha parameter (0-1) controls weighting. Results are filtered by user's ACL permissions.",
+    
+    "10. Re-ranking & Relevance Scoring: Top K documents (typically 20-50) undergo re-ranking using cross-encoder models that score query-document relevance more accurately than embedding similarity. Time decay factor boosts recent documents. Results are sorted by combined relevance score.",
+    
+    "11. Context Preparation & Prompt Building: Top N ranked chunks (configurable, typically 5-10) are formatted into context. System applies prompt template specific to selected persona/assistant. Template includes system instructions, context chunks with metadata, user query, and any conversation history.",
+    
+    "12. LLM Interaction - Answer Generation: Formatted prompt is sent to configured LLM provider (OpenAI, Anthropic, Azure OpenAI, local models via LiteLLM). System supports streaming responses for real-time user experience. LLM generates answer grounded in provided context, with citations to source documents.",
+    
+    "13. Response Post-Processing: Answer is parsed to extract citations, format markdown, and validate content. System logs interaction for analytics: query text, documents retrieved, tokens used, response time. Citations link back to original source documents for verification.",
+    
+    "14. Permission Validation & Document Access: When user clicks citation or requests document, system re-validates permissions against current ACL. If authorized, document content is retrieved from original source or cached version. Access attempts are logged for audit trails.",
+    
+    "15. Background Maintenance - Index Updates: Celery workers continuously process indexing queue. New or updated documents flow through processing pipeline. Modified documents are re-chunked, re-embedded, and updated in Vespa. Deleted documents are removed from index. Status is tracked in PostgreSQL.",
+    
+    "16. Background Maintenance - Permission Sync: Separate background jobs sync permissions from source systems. For each connector, system fetches current access control lists and updates document ACLs in Vespa. This ensures query-time permission filtering reflects current organizational structure.",
+    
+    "17. Agent & Tool Execution: When chat involves custom agents, system identifies required tools (search, API calls, calculators). Agent framework orchestrates multi-step workflows, invoking tools sequentially or in parallel. Tool results are fed back to LLM for reasoning and response generation.",
+    
+    "18. Feedback & Learning: Users can provide feedback (thumbs up/down) on answers. Feedback is stored with associated query, documents, and model parameters. System uses feedback to improve search ranking and identify knowledge gaps for administrators.",
+    
+    "19. Analytics & Monitoring: System continuously logs metrics: query latency, document indexing rates, LLM token usage, error rates. Vespa timing information tracks search performance. PostgreSQL stores historical analytics. Telemetry data (optional) helps product improvement.",
+    
+    "20. Administrative Operations: Admins manage system via web UI: configure LLM providers, create document sets (filtered collections), define personas/assistants with custom prompts, set rate limits, review usage analytics, and manage user groups and permissions."
+  ],
+  
+  "Components": [
+    {
+      "UiPathProduct": "API Workflow",
+      "Purpose": "Backend API Server - FastAPI application serving REST endpoints for authentication, connector management, search queries, chat interactions, and administrative operations. Handles HTTP requests/responses with JSON payloads."
+    },
+    {
+      "UiPathProduct": "RPA Workflow",
+      "Purpose": "Connector Data Ingestion Workflows - Automated workflows for each connector type (40+ connectors) that authenticate with external systems, fetch documents via REST APIs or SDKs, handle pagination and rate limits, and process responses into standardized document format."
+    },
+    {
+      "UiPathProduct": "RPA Workflow",
+      "Purpose": "Document Processing Pipeline - Workflow that receives raw documents, performs content extraction (HTML parsing, PDF text extraction, file reading), chunks documents intelligently, handles metadata extraction, and outputs processed chunks ready for embedding."
+    },
+    {
+      "UiPathProduct": "API Workflow",
+      "Purpose": "Embedding Service Integration - API workflow that batches document chunks, makes HTTP requests to embedding model endpoint (internal Model Server or external API), receives vector embeddings, and manages retry logic for failed requests."
+    },
+    {
+      "UiPathProduct": "Solution",
+      "Purpose": "Index Management Solution - Coordinates interactions with Vespa vector database for storing/retrieving embeddings and metadata. Manages index schemas, handles bulk document insertion, executes hybrid search queries, and applies permission filters."
+    },
+    {
+      "UiPathProduct": "RPA Workflow",
+      "Purpose": "Background Job Scheduler - Celery-based task queue implementation using UiPath Orchestrator queues. Schedules and executes recurring jobs for connector polling, document indexing, permission syncing, and maintenance tasks. Handles job prioritization and retry logic."
+    },
+    {
+      "UiPathProduct": "Agent",
+      "Purpose": "Conversational Chat Agent - AI agent that receives user queries, orchestrates search execution, formats prompts with retrieved context, interacts with LLM APIs (OpenAI, Anthropic, etc.), handles streaming responses, and manages conversation state/history."
+    },
+    {
+      "UiPathProduct": "Agent",
+      "Purpose": "Custom Persona Agents - Specialized agents configured with specific prompts, knowledge domains (document sets), and capabilities. Each persona agent implements unique behavior patterns, tool access, and response styles for different use cases."
+    },
+    {
+      "UiPathProduct": "Solution",
+      "Purpose": "Authentication & Authorization Service - Manages user authentication flows (OAuth2, SAML, OIDC), validates JWT tokens, maintains session state in Redis, enforces RBAC policies, and syncs with external identity providers."
+    },
+    {
+      "UiPathProduct": "RPA Workflow",
+      "Purpose": "Permission Synchronization Workflow - Periodically fetches access control lists from source systems (Google Drive permissions, Slack channel memberships, etc.), normalizes permission models, and updates document ACLs in the vector database."
+    },
+    {
+      "UiPathProduct": "API Workflow",
+      "Purpose": "Search & Retrieval Service - Handles search query execution by generating query embeddings, calling Vespa hybrid search, applying re-ranking algorithms, filtering by permissions, and returning ranked document chunks with metadata."
+    },
+    {
+      "UiPathProduct": "Solution",
+      "Purpose": "Database Management - PostgreSQL database operations for storing connector configurations, credentials (encrypted), user accounts, chat history, document metadata, indexing status, analytics data, and system settings."
+    },
+    {
+      "UiPathProduct": "RPA Workflow",
+      "Purpose": "LLM Provider Integration Workflows - Workflows for each LLM provider integration (OpenAI, Anthropic, Azure, AWS Bedrock, local models) handling API authentication, request formatting, streaming response parsing, token counting, and error handling."
+    },
+    {
+      "UiPathProduct": "Solution",
+      "Purpose": "Cache Management - Redis-based caching layer for session data, frequently accessed documents, search results, user permissions, and API rate limit tracking. Implements TTL-based expiration and cache invalidation strategies."
+    },
+    {
+      "UiPathProduct": "Solution",
+      "Purpose": "Web Frontend Application - Next.js/React web application providing user interface for chat interactions, search, document management, connector configuration, and administrative dashboards. Communicates with backend via REST APIs."
+    },
+    {
+      "UiPathProduct": "Agent",
+      "Purpose": "Slack Bot Agent - Autonomous agent that monitors Slack workspace, responds to mentions and DMs, executes searches based on Slack messages, formats responses for Slack UI, handles Slack-specific authentication, and manages channel permissions."
+    },
+    {
+      "UiPathProduct": "RPA Workflow",
+      "Purpose": "Model Server Workflow - Hosts NLP models locally (embedding models, re-ranking models) using optimized inference engines. Receives batch requests, performs GPU/CPU-accelerated inference, and returns model outputs (embeddings, scores)."
+    },
+    {
+      "UiPathProduct": "Solution",
+      "Purpose": "Monitoring & Analytics Platform - Collects and aggregates system metrics (latency, throughput, error rates), user behavior analytics (query patterns, document usage), and cost tracking (LLM token usage). Provides dashboards and alerts."
+    },
+    {
+      "UiPathProduct": "API Workflow",
+      "Purpose": "Webhook Handlers - Receive real-time notifications from external systems (Slack events, Google Drive changes, etc.), validate webhook signatures, and trigger corresponding data sync or notification workflows."
+    },
+    {
+      "UiPathProduct": "RPA Workflow",
+      "Purpose": "Document Set Management - Automates creation and maintenance of document sets (filtered collections) based on rules: connector sources, tags, time ranges. Handles dynamic updates as documents are added/removed from index."
+    }
+  ],
+  
+  "DataHandling": {
+    "Inputs": [
+      "User credentials and authentication tokens (OAuth2, SAML assertions, API keys)",
+      "Connector configuration parameters (API endpoints, workspace IDs, authentication credentials)",
+      "Raw documents from 40+ sources: text files, PDFs, HTML pages, Office documents, emails, Slack messages, Jira tickets, etc.",
+      "Natural language queries from users via web interface, Slack, or API",
+      "User feedback on search results and chat responses (ratings, explicit feedback)",
+      "Administrative configurations: LLM provider settings, embedding model selections, search parameters, rate limits",
+      "Permission data from external systems: user groups, folder/channel access rights, organizational hierarchies",
+      "Webhook notifications: real-time events from connected systems (document created, user added to channel, etc.)",
+      "Conversation history and context from previous chat interactions",
+      "Custom prompts and persona definitions from administrators"
+    ],
+    "Outputs": [
+      "Processed document chunks with metadata stored in Vespa vector database",
+      "Dense vector embeddings (768 or 1024 dimensions depending on model) for semantic search",
+      "Hybrid search results with relevance scores, citations, and permission-filtered content",
+      "AI-generated responses with citations to source documents, formatted in markdown",
+      "Indexed documents with keyword inverted indexes for exact match searching",
+      "Encrypted credentials stored in PostgreSQL with AES-256 encryption",
+      "User session tokens (JWT) with configured expiration times",
+      "Analytics data: query logs, document access patterns, token usage metrics, latency measurements",
+      "Notification messages to users via Slack or email for document updates, mentions, or system alerts",
+      "Administrative reports: connector status, indexing progress, error logs, usage statistics",
+      "API responses in JSON format for programmatic access to search and chat functionality",
+      "Audit logs for compliance: document access attempts, permission changes, configuration updates",
+      "Exported document sets and curated knowledge collections in standardized formats",
+      "Real-time streaming responses during chat interactions for improved user experience"
+    ],
+    "Transformations": [
+      "Raw document content → Cleaned text via HTML parsing, PDF extraction, file format conversion, removing scripts/styles",
+      "Long documents → Semantic chunks (default 512 tokens) using intelligent splitting that preserves context, sections, and code blocks",
+      "Text chunks → Dense vector embeddings (768/1024 dimensions) via transformer models optimized for semantic similarity",
+      "Natural language queries → Query embeddings using same model as documents to enable similarity search",
+      "External permission models → Normalized ACLs compatible with Vespa filtering (user IDs, group memberships)",
+      "Multi-source documents → Unified document schema with standardized metadata fields (title, source, timestamp, author, URL)",
+      "Search results → Re-ranked documents using cross-encoder models that score query-document pairs more accurately",
+      "Retrieved context chunks → Formatted prompts with specific templates based on selected persona and conversation history",
+      "LLM raw responses → Parsed answers with extracted citations, formatted markdown, and validated content",
+      "Connector-specific API responses → Standardized document objects implementing common interface (Document model)",
+      "User queries → Expanded queries with synonyms, spell correction, and multi-language translation when configured",
+      "Real-time events from webhooks → Queued background jobs for incremental indexing and permission updates",
+      "Batch document updates → Delta operations in Vespa (upsert modified, delete removed) for efficient index maintenance",
+      "Historical conversation messages → Context windows with token limits, summarization for long conversations",
+      "Multiple LLM provider formats → Unified interface via LiteLLM proxy for consistent prompt/response handling",
+      "Raw feedback data → Aggregated analytics metrics used for search quality improvement and knowledge gap identification",
+      "System metrics and logs → Structured analytics data for performance monitoring, cost optimization, and troubleshooting",
+      "Time-series document updates → Time decay scoring factors that boost recent content in search rankings"
+    ]
+  },
+  
+  "IntegrationPoints": [
+    {
+      "System": "Google Workspace (Drive, Gmail, Calendar)",
+      "Method": "Google OAuth2 + Google APIs REST endpoints with client SDKs. Uses service account credentials for server-to-server auth or delegated user credentials.",
+      "DataExchanged": "Sent: OAuth tokens, API queries with file IDs and search parameters, permission requests. Received: Document content (Drive files), email messages, calendar events, user permissions, file metadata with timestamps and authors."
+    },
+    {
+      "System": "Slack Workspace",
+      "Method": "Slack OAuth2 + Events API (webhooks) + Web API. Bot tokens for workspace access. Socket mode for real-time events.",
+      "DataExchanged": "Sent: OAuth tokens, channel/message queries, chat message posts, reaction updates. Received: Channel messages, thread replies, file uploads, user profiles, workspace metadata, real-time message events via webhooks."
+    },
+    {
+      "System": "Atlassian Confluence & Jira",
+      "Method": "OAuth 1.0a or Personal Access Tokens + Confluence/Jira REST APIs v2/v3. Optional Confluence OAuth2 for cloud deployments.",
+      "DataExchanged": "Sent: Auth tokens, CQL/JQL queries, page/issue IDs. Received: Wiki pages with attachments, issue tickets with comments, user permissions per space/project, page hierarchy, custom field values."
+    },
+    {
+      "System": "Microsoft 365 (SharePoint, Teams, OneDrive)",
+      "Method": "Microsoft OAuth2 (MSAL library) + Microsoft Graph API. App permissions or delegated permissions depending on deployment.",
+      "DataExchanged": "Sent: Access tokens with specific scopes, GraphQL queries. Received: SharePoint site content, Teams channel messages, OneDrive files, calendar events, user profile data, group memberships."
+    },
+    {
+      "System": "Salesforce",
+      "Method": "OAuth2 JWT Bearer Flow or Username-Password Flow + Salesforce REST/SOAP APIs. Connected App configuration.",
+      "DataExchanged": "Sent: OAuth tokens, SOQL queries for objects (Accounts, Opportunities, Cases, custom objects). Received: CRM records with all fields, attachments, user permissions, object metadata, relationship data."
+    },
+    {
+      "System": "GitHub",
+      "Method": "GitHub OAuth Apps or Personal Access Tokens + GitHub REST API v3. GraphQL API for complex queries.",
+      "DataExchanged": "Sent: Auth tokens, repository queries, issue filters. Received: Repository files (markdown, code), issues, pull requests with comments, wiki pages, commit history, user permissions per repository."
+    },
+    {
+      "System": "Zendesk",
+      "Method": "OAuth2 or API token authentication + Zendesk REST API. Supports incremental exports for efficient polling.",
+      "DataExchanged": "Sent: Auth credentials, ticket queries with time filters, user IDs. Received: Support tickets with comments, knowledge base articles, user data, ticket metadata (status, priority, tags), attachments."
+    },
+    {
+      "System": "LLM Providers (OpenAI, Anthropic, Azure OpenAI, AWS Bedrock)",
+      "Method": "HTTP REST APIs with API key authentication. Streaming via Server-Sent Events (SSE). LiteLLM proxy for unified interface.",
+      "DataExchanged": "Sent: API keys, formatted prompts with system/user messages, temperature/top-p parameters, token limits. Received: Generated text completions, usage metrics (prompt tokens, completion tokens, total cost), streaming response chunks."
+    },
+    {
+      "System": "Vespa Vector Database",
+      "Method": "HTTP REST API for data operations + Native Query Language (YQL) for searches. JSON document format. Feeders for bulk operations.",
+      "DataExchanged": "Sent: Document JSONs with embeddings and metadata, YQL search queries with filters and ranking profiles. Received: Search results with relevance scores, document retrievals, index statistics, query performance metrics."
+    },
+    {
+      "System": "PostgreSQL Database",
+      "Method": "Direct database connection via SQLAlchemy ORM. Connection pooling with configurable pool size. Prepared statements for security.",
+      "DataExchanged": "Sent: SQL queries for CRUD operations, transaction commits. Received: Connector configurations, user accounts, credentials, chat sessions, indexing status, analytics data, system settings, audit logs."
+    },
+    {
+      "System": "Redis Cache",
+      "Method": "Direct Redis protocol connection. Redis client libraries with connection pooling. Pub/sub for real-time events.",
+      "DataExchanged": "Sent: Cache set/get commands, session tokens, rate limit counters, lock acquisitions. Received: Cached data (documents, search results, user sessions), distributed lock confirmations, pub/sub messages."
+    },
+    {
+      "System": "Embedding Model Service",
+      "Method": "HTTP REST API to internal Model Server or external services (Cohere, OpenAI embeddings). Batch requests for efficiency.",
+      "DataExchanged": "Sent: Text chunks in batches (up to 32), model name specification. Received: Dense vector embeddings (arrays of floats), processing time metrics, batch confirmation."
+    },
+    {
+      "System": "SMTP Email Server",
+      "Method": "SMTP protocol with TLS encryption. Configurable server, port, authentication credentials.",
+      "DataExchanged": "Sent: Authentication credentials, email messages with headers (from, to, subject), HTML/text body, attachments. Received: Delivery confirmations or bounce messages."
+    },
+    {
+      "System": "Identity Providers (Okta, Auth0, Azure AD)",
+      "Method": "SAML 2.0 or OIDC protocols. OAuth2 authorization code flow. IdP-initiated or SP-initiated SSO.",
+      "DataExchanged": "Sent: SAML/OIDC authentication requests, redirect URIs, client IDs/secrets. Received: SAML assertions or JWT ID tokens with user attributes (email, name, groups), access/refresh tokens."
+    },
+    {
+      "System": "Object Storage (AWS S3, Google Cloud Storage, R2, Azure Blob)",
+      "Method": "REST APIs with IAM authentication or access keys. SDK libraries for each provider. Streaming for large files.",
+      "DataExchanged": "Sent: Authentication credentials, bucket/object paths, file content uploads. Received: File content downloads, metadata (size, modification time, content type), directory listings."
+    },
+    {
+      "System": "Celery Task Queue",
+      "Method": "Message broker integration (Redis or RabbitMQ). Task serialization with Pickle or JSON. Result backends for task status.",
+      "DataExchanged": "Sent: Serialized task definitions with arguments, task priorities, countdown/ETA scheduling. Received: Task execution confirmations, result data, error tracebacks, task status updates."
+    },
+    {
+      "System": "Document360 Knowledge Base",
+      "Method": "REST API with API token authentication. Rate limiting (100 calls per 60 seconds).",
+      "DataExchanged": "Sent: API tokens, project version queries, article IDs. Received: Knowledge base articles with HTML content, categories, version information, author metadata, publication dates."
+    },
+    {
+      "System": "Notion Workspace",
+      "Method": "OAuth2 + Notion API. Internal integration tokens or public OAuth integrations.",
+      "DataExchanged": "Sent: Integration tokens, page/database IDs, block queries. Received: Page content as blocks, database records with properties, user information, workspace structure, child page hierarchies."
+    },
+    {
+      "System": "Gong Sales Intelligence",
+      "Method": "OAuth2 + Gong API. Workspace-specific credentials.",
+      "DataExchanged": "Sent: OAuth tokens, call queries with date filters, workspace identifiers. Received: Call transcripts, meeting metadata (participants, duration), recorded media references, interaction insights."
+    },
+    {
+      "System": "Linear Project Management",
+      "Method": "OAuth2 + Linear GraphQL API. Personal API keys or OAuth applications.",
+      "DataExchanged": "Sent: API keys/OAuth tokens, GraphQL queries for issues and projects. Received: Issue details with descriptions and comments, project information, team data, user assignments, workflow states."
+    }
+  ],
+  
+  "ConstraintsAndAssumptions": [
+    "Python 3.11 runtime required for backend services - UiPath must support or emulate Python execution environment or translate logic to .NET/UiPath native activities",
+    "Vespa vector database assumed to be external service - UiPath solution must integrate with Vespa via REST API or find equivalent vector database with UiPath connectors",
+    "Embedding models require GPU acceleration for production scale - UiPath deployment needs GPU-enabled machines or cloud GPU instances for model inference",
+    "Real-time streaming responses from LLMs assumed for good UX - UiPath agents must handle Server-Sent Events or implement chunked transfer encoding",
+    "PostgreSQL required for relational data storage - UiPath must connect to PostgreSQL or translate schema to supported databases (SQL Server, Oracle)",
+    "Redis required for caching and session management - UiPath must integrate with Redis or use alternative distributed cache with similar semantics",
+    "OAuth2/SAML/OIDC authentication flows assumed - UiPath authentication activities must support modern auth protocols with proper token handling",
+    "Celery task queue for background jobs - UiPath Orchestrator queues can replace Celery, but task serialization and retry logic must be reimplemented",
+    "FastAPI application serves REST endpoints - UiPath API Workflows can expose similar REST APIs with comparable performance characteristics",
+    "Multi-tenancy support with tenant-specific database schemas - UiPath solution must implement tenant isolation at database and application layers",
+    "Concurrent request handling with async/await patterns - UiPath must handle concurrent operations efficiently, potentially using parallel workflows",
+    "JWT tokens with configurable expiration for session management - UiPath must implement secure token generation, validation, and refresh mechanisms",
+    "Document ACLs enforce permission filtering at query time in Vespa - UiPath must ensure permission checks happen before results are returned to users",
+    "Connector rate limits vary by source (Google 10K requests/day, Slack varies by tier) - UiPath workflows must implement rate limiting with backoff strategies",
+    "Vector embeddings are 768 or 1024 dimensions depending on model - UiPath must handle high-dimensional numerical arrays efficiently in memory",
+    "Document chunks default to 512 tokens with configurable overlap - UiPath chunking logic must respect token boundaries and preserve semantic coherence",
+    "LLM context windows vary (4K to 200K+ tokens) - UiPath prompt building must adapt to model-specific limits and handle truncation gracefully",
+    "Web frontend built with Next.js/React - UiPath may need custom UI or integrate with existing web app via API, Apps interface isn't a direct replacement",
+    "Deployment options include Docker, Kubernetes, single-machine - UiPath deployment must consider orchestrator, robots, and infrastructure requirements",
+    "Network connectivity to external APIs required - UiPath robots need internet access or proxy configuration for connector integrations",
+    "SSL/TLS certificates required for production HTTPS endpoints - UiPath must handle certificate management for secure API exposure",
+    "Database migrations managed by Alembic - UiPath must implement database schema versioning and migration strategy",
+    "Logging and monitoring integration with external tools - UiPath logs must integrate with organization's existing monitoring stack (Datadog, Prometheus, etc.)",
+    "Cost considerations for LLM API usage (typically $0.001-0.06 per 1K tokens) - UiPath solution must track and optimize token usage for cost management",
+    "Storage requirements scale with document corpus (1GB to 100s TB) - UiPath infrastructure must accommodate growing data volumes",
+    "Search latency target < 1 second for good UX - UiPath workflows must be optimized for low latency, minimizing RPA step overhead",
+    "Indexing throughput target of 1000s documents per hour - UiPath background workflows must scale horizontally to meet throughput requirements",
+    "High availability assumes multiple replicas of services - UiPath Orchestrator and robot pools must be configured for HA",
+    "Backup and disaster recovery procedures must be defined - UiPath solution needs backup strategy for databases, indexes, and configurations",
+    "Security scanning and vulnerability management required - UiPath packages must pass security reviews and be kept updated",
+    "Compliance requirements vary by industry (HIPAA, SOC2, GDPR) - UiPath implementation must meet specific compliance controls",
+    "User onboarding assumes technical competency for connector setup - UiPath may need simplified workflows or wizard-based configuration",
+    "Model fine-tuning not currently supported but roadmap item - UiPath architecture should allow for future integration of custom trained models",
+    "Query history and analytics assume significant storage (100s GB) - UiPath databases must be sized appropriately for analytics retention",
+    "Telemetry collection optional but enabled by default - UiPath solution must provide opt-in/opt-out mechanism that respects privacy",
+    "Browser automation for web connector uses Playwright - UiPath can leverage native RPA capabilities for web scraping",
+    "Email verification required for user registration in some deployments - UiPath must implement SMTP integration for verification emails",
+    "API rate limiting protects against abuse - UiPath API workflows must implement rate limiting per user/API key",
+    "Token budgets limit LLM usage per user/organization - UiPath must track token consumption and enforce quotas",
+    "File uploads limited to configurable size (default 10MB per file) - UiPath workflows must validate file sizes before processing",
+    "Document retention policies may require periodic cleanup - UiPath must implement scheduled deletion workflows based on retention rules"
+  ],
+  
+  "OpenQuestions": [
+    "How should UiPath handle the Python-based NLP models and embedding generation? Options: (1) Keep Python Model Server and call via API, (2) Translate to ONNX and use .NET runtime, (3) Use cloud-based embedding APIs exclusively.",
+    "What UiPath licensing model applies for the number of bots needed? Background job processing may require many concurrent unattended robots for indexing at scale.",
+    "Can UiPath Agents support streaming responses from LLMs with acceptable latency? Or should streaming be handled by a lightweight API gateway in front of UiPath?",
+    "How to map Celery's task priorities and ETAs to UiPath Orchestrator queue priorities and delayed execution?",
+    "Should the web frontend remain as-is (Next.js) and only backend be reimplemented in UiPath, or should UiPath Apps be used for UI?",
+    "How to handle vector database integration - is there a UiPath connector for Vespa, or must it be custom HTTP activities? Alternative: migrate to vector DB with better UiPath support?",
+    "What is the strategy for managing secrets and credentials? UiPath Orchestrator Assets/Credential Store, or external vault like HashiCorp Vault?",
+    "How to implement multi-tenancy in UiPath - separate Orchestrator folders per tenant, or application-level tenant filtering?",
+    "Can UiPath handle the concurrent load of 100s-1000s of simultaneous chat requests, or is a traditional API gateway needed in front?",
+    "How should database migrations be managed in UiPath - manual SQL scripts, dedicated .NET migration tool, or UiPath workflow that executes Alembic?",
+    "What monitoring and alerting approach for UiPath workflows - Orchestrator Insights, Elasticsearch integration, or external APM tools?",
+    "How to handle the 40+ connectors - implement all in UiPath, prioritize subset, or maintain hybrid with Python connectors behind API?",
+    "Should the Slack bot be an RPA workflow or remain as standalone service that calls UiPath API workflows?",
+    "How to optimize for cost - UiPath licensing costs vs current infrastructure costs (cloud compute, LLM APIs, vector DB)?",
+    "What is the deployment topology - cloud Orchestrator vs on-premise, robot count and sizing, database server specifications?",
+    "How to handle upgrades and versioning of UiPath packages when multiple workflows are interdependent?",
+    "Should LiteLLM proxy layer be kept as-is or reimplemented in UiPath for unified LLM provider interface?",
+    "How to implement permission syncing - real-time via webhooks or scheduled polling? Impact on external system rate limits?",
+    "What's the approach for handling long-running indexing jobs - Job chaining in Orchestrator, or keep Celery for this component?",
+    "How to ensure exactly-once processing semantics for document updates when using UiPath queues?",
+    "Should re-ranking models run in UiPath or external service? Re-ranking requires fast inference on 20-50 documents per query.",
+    "How to implement distributed locking for concurrent access to shared resources (e.g., connector sync locks) in UiPath?",
+    "What's the testing strategy for UiPath workflows - unit tests via UiPath Test Suite, or integration tests via external framework?",
+    "How to handle PDF parsing, OCR, and complex document processing - UiPath Document Understanding, or keep specialized Python libraries?",
+    "Should the system remain as microservices architecture, or consolidate into monolithic UiPath solution for simpler deployment?",
+    "How to implement circuit breakers and retry policies for external API calls in UiPath - built-in retry scopes or custom logic?",
+    "What's the disaster recovery plan - how quickly can UiPath workflows be redeployed, databases restored, and indexes rebuilt?",
+    "How to handle schema evolution in Vespa indexes when document fields change - workflow to migrate existing documents?",
+    "Should query analytics and logging go to PostgreSQL or separate analytics database (ClickHouse, TimescaleDB)?",
+    "How to implement feature flags in UiPath for gradual rollout of new features - Config files, Orchestrator assets, or external service?",
+    "What's the approach for handling time zones across global deployments - UTC normalization, or preserve local times with TZ metadata?"
+  ]
+}
